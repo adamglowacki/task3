@@ -11,6 +11,6 @@ repositories {
 dependencies {
     compile group: 'com.tinkerpop.gremlin', name: 'gremlin-groovy', version: '1.4'
     compile group: 'com.tinkerpop.blueprints', name: 'blueprints-neo4j-graph', version: '1.1'
-    groovy group: 'org.codehaus.groovy', name: 'groovy', version: '1.8.5'
+    groovy group: 'org.codehaus.groovy', name: 'groovy', version: '1.8.4'
     testCompile group: 'junit', name: 'junit', version: '4.10'
 }
