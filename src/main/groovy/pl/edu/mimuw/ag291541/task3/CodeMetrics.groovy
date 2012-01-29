@@ -8,7 +8,9 @@ import com.tinkerpop.pipes.Pipe
 
 class CodeMetrics {
     public static final String MY_NUMBER_OF_CONSTRUCTORS = 'ag291541NumberOfConstructors'
-    public static final String MY_DEPTH_OF_INHERITANCE = 'ag291541DepthOfInheritance'
+    public static final String MY_NUMBER_OF_SUBTYPES = 'ag291541NumberOfSubtypes'
+    public static final String MY_NUMBER_OF_DIRECT_SUBTYPES = 'ag291541NumberOfDirectSubtypes'
+    public static final String MY_AVERAGE_NUMBER_OF_SUBTYPES = 'ag291541AverageNumberOfSubtypes'
     private static final String NAME = 'name'
     private static final String KEY = 'KEY'
     private static final String TYPE = 'TYPE_PROPERTY'
@@ -19,6 +21,9 @@ class CodeMetrics {
     private static final String METHOD_TYPE = 'method'
     private static final String INTERFACE_TYPE = 'interface'
     private static final String ANNOTATION_TYPE = 'annotation_type'
+    private static final String PARAMETERIZED_TYPE = 'parametrized_type'
+    private static final String PACKAGE_TYPE = 'package'
+    private static final String PROJECT_TYPE = 'project'
 
     private static final String CONTAINS_EDGE = 'CONTAINS'
     private static final String EXTENDS_EDGE = 'EXTENDS'
@@ -28,10 +33,13 @@ class CodeMetrics {
         Gremlin.load()
         def cl = {final String typeName -> _().filter {it[TYPE] == typeName}}
         Gremlin.defineStep('filterType', [Vertex, Pipe], cl)
-        Gremlin.defineStep('filterClass', [Vertex, Pipe], {_().filterType(CLASS_TYPE)})
+        Gremlin.defineStep('filterC', [Vertex, Pipe], {_().filterType(CLASS_TYPE)})
         Gremlin.defineStep('filterMethod', [Vertex, Pipe], {_().filterType(METHOD_TYPE)})
-        Gremlin.defineStep('filterInterface', [Vertex, Pipe], {_().filterType(INTERFACE_TYPE)})
-        Gremlin.defineStep('filterAnnotation', [Vertex, Pipe], {_().filterType(ANNOTATION_TYPE)})
+        Gremlin.defineStep('filterI', [Vertex, Pipe], {_().filterType(INTERFACE_TYPE)})
+        Gremlin.defineStep('filterA', [Vertex, Pipe], {_().filterType(ANNOTATION_TYPE)})
+        Gremlin.defineStep('filterCIAP', [Vertex, Pipe], {_().filter {it[TYPE] == CLASS_TYPE || it[TYPE] == INTERFACE_TYPE || it[TYPE] == ANNOTATION_TYPE || it[TYPE] == PARAMETERIZED_TYPE}})
+        def typeContainer = new HashSet<String>([CLASS_TYPE, INTERFACE_TYPE, ANNOTATION_TYPE, PACKAGE_TYPE, PROJECT_TYPE])
+        Gremlin.defineStep('filterTypeContainer', [Vertex, Pipe], {_().filter {typeContainer.contains(it[TYPE])}})
         Gremlin.defineStep('filterName', [Vertex, Pipe], {final String desiredName -> _().filter {it[NAME] == desiredName}})
         Gremlin.defineStep('filterNotStub', [Vertex, Pipe], {_().filter {!it.stubNode}})
         Gremlin.defineStep('outContains', [Vertex, Pipe], {_().out(CONTAINS_EDGE)})
@@ -45,49 +53,53 @@ class CodeMetrics {
 
     /**
      * Counts number of constructors for each class and stores it as a {@code MY_NUMBER_OF_CONSTRUCTORS} property.
-     * @param path File path of a Neo4j graph.
+     * @param path File path of a Neo4j graph
      */
     public void numberOfConstructors(String path) {
         loadGremlin()
         Graph g = openNeo4j(path)
         try {
-            g.V.filterClass.set(MY_NUMBER_OF_CONSTRUCTORS, 0).iterate()
+            g.V.filterC.set(MY_NUMBER_OF_CONSTRUCTORS, 0).iterate()
             def x = ''
-            g.V.filterClass.sideEffect {x = it.name}.outContains.filterMethod.filter {it.name == x}
-                    .as('marking').inContains.filterClass.inc(MY_NUMBER_OF_CONSTRUCTORS, 1).loop('marking') {true}.iterate()
+            g.V.filterC.sideEffect {x = it.name}.outContains.filterMethod.filter {it.name == x}
+                    .as('marking').inContains.filterC.inc(MY_NUMBER_OF_CONSTRUCTORS, 1).loop('marking') {true}.iterate()
         } finally {
             g.shutdown()
         }
     }
 
     /**
-     * Stores depth of inheritance for each class and interface as a {@code MY_DEPTH_OF_INHERITANCE} property.
-     * @param g
+     * Stores number of subtypes for each class and interface as a {@code MY_NUMBER_OF_SUBTYPES}.
+     * @param g A graph
      */
-    private void depthOfInheritance(Graph g) {
-        g.V.filterInterface.set(MY_DEPTH_OF_INHERITANCE, 1).iterate()
-        g.V.filterAnnotation.set(MY_DEPTH_OF_INHERITANCE, 1).iterate()
-        def lastDepth = 0
-        g.V.filter {it[KEY] == OBJECT_KEY}.sideEffect {it[MY_DEPTH_OF_INHERITANCE] = 1}
-                .as('store_depth').sideEffect {lastDepth = it[MY_DEPTH_OF_INHERITANCE]}.inExtends.sideEffect {it[MY_DEPTH_OF_INHERITANCE] = lastDepth + 1}
-                .loop('store_depth') {true}.iterate()
+    private void numberOfSubtypes(Graph g) {
+        g.V.filterTypeContainer.set(MY_NUMBER_OF_SUBTYPES, 0).iterate()
+        /* Store also the value in project vertex, package vertices. */
+        g.V.filterTypeContainer.as('to_containing').inContains.filterTypeContainer.inc(MY_NUMBER_OF_SUBTYPES, 1).loop('to_containing') {true}.iterate()
     }
 
     /**
-     * Returns an average depth of inheritance hierarchy among all classes and interfaces. {@code java.lang.Object} has depth 1 and every interface has depth 1.
-     * @param path
-     * @return An average depth of inheritance.
+     * Stores number of subtypes defined directly in each class and interface as their property named {@code MY_NUMBER_OF_DIRECT_SUBTYPES}.
+     * @param g A graph
      */
-    public double averageDepthOfInheritance(String path) {
+    private void numberOfDirectSubtypes(Graph g) {
+        g.V.filterTypeContainer.set(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
+        /* Store also the value in project vertex, package vertices. */
+        g.V.filterTypeContainer.inContains.inc(MY_NUMBER_OF_DIRECT_SUBTYPES, 1).iterate()
+    }
+
+    /**
+     * Stores an average number of subtypes defined in a type container as a {@code MY_AVERAGE_NUMBER_OF_SUBTYPES}.
+     * @param path File path of the Neo4j db.
+     * @return A metric value on the project node
+     */
+    public double averageNumberOfSubtypes(String path) {
         Graph g = openNeo4j(path)
         try {
-            depthOfInheritance(g)
-            def sumOfDepths = 0
-            def countOfTypes = 0
-            g.v(PROJECT_VERTEX_ID)
-                    .as('come_to_son').outContains.filter {it[TYPE] == CLASS_TYPE || it[TYPE] == INTERFACE_TYPE || it[TYPE] == ANNOTATION_TYPE}
-                    .sideEffect {sumOfDepths += it[MY_DEPTH_OF_INHERITANCE]; countOfTypes++}.loop('come_to_son') {true}
-            return ((double)sumOfDepths) / countOfTypes
+            numberOfSubtypes(g)
+            numberOfDirectSubtypes(g)
+            g.V.filterTypeContainer.sideEffect {it[MY_AVERAGE_NUMBER_OF_SUBTYPES] = ((double) it[MY_NUMBER_OF_SUBTYPES]) / it[MY_NUMBER_OF_DIRECT_SUBTYPES]}.iterate()
+            return g.v(PROJECT_VERTEX_ID)[MY_AVERAGE_NUMBER_OF_SUBTYPES]
         } finally {
             g.shutdown()
         }
@@ -95,16 +107,16 @@ class CodeMetrics {
 
     /**
      * Returns number of vertices of given type that have different values of given numeric properties. It ignores stub nodes.
-     * @param path
-     * @param type
-     * @param property1
-     * @param property2
+     * @param path A Neo4j graph.
+     * @param type Name of type to filter
+     * @param property1 First property name
+     * @param property2 Second property name
      * @return Number of vertices that have non-equal properties.
      */
     public long differentOn(String path, String type, String property1, String property2) {
         Graph g = openNeo4j(path)
         try {
-            def number = 0
+            def number = 0L
             g.V.filterType(type).filterNotStub.filter {it[property1] >= 0 && it[property2] >= 0 && it[property1] != it[property2]}.sideEffect {number++}.iterate()
             return number
         } finally {
