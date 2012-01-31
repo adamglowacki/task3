@@ -11,6 +11,8 @@ class CodeMetrics {
     public static final String MY_NUMBER_OF_SUBTYPES = 'ag291541NumberOfSubtypes'
     public static final String MY_NUMBER_OF_DIRECT_SUBTYPES = 'ag291541NumberOfDirectSubtypes'
     public static final String MY_AVERAGE_NUMBER_OF_SUBTYPES = 'ag291541AverageNumberOfSubtypes'
+    public static final String VISITED = 'ag291541Visited'
+    public static final String NUMBER_OF_OUT = 'ag291541NumberOfOut'
     private static final String NAME = 'name'
     private static final String KEY = 'KEY'
     private static final String TYPE = 'TYPE_PROPERTY'
@@ -31,24 +33,36 @@ class CodeMetrics {
 
     private void loadGremlin() {
         Gremlin.load()
-        def cl = {final String typeName -> _().filter {it[TYPE] == typeName}}
-        Gremlin.defineStep('filterType', [Vertex, Pipe], cl)
+        Gremlin.defineStep('filterType', [Vertex, Pipe], {final String typeName -> _().filter {it[TYPE] == typeName}})
+        Gremlin.defineStep('filterTypes', [Vertex, Pipe], {final Set<String> allowed -> _().filter {allowed.contains(it[TYPE])}})
         Gremlin.defineStep('filterC', [Vertex, Pipe], {_().filterType(CLASS_TYPE)})
-        Gremlin.defineStep('filterMethod', [Vertex, Pipe], {_().filterType(METHOD_TYPE)})
+        Gremlin.defineStep('filterM', [Vertex, Pipe], {_().filterType(METHOD_TYPE)})
         Gremlin.defineStep('filterI', [Vertex, Pipe], {_().filterType(INTERFACE_TYPE)})
         Gremlin.defineStep('filterA', [Vertex, Pipe], {_().filterType(ANNOTATION_TYPE)})
-        Gremlin.defineStep('filterCIAP', [Vertex, Pipe], {_().filter {it[TYPE] == CLASS_TYPE || it[TYPE] == INTERFACE_TYPE || it[TYPE] == ANNOTATION_TYPE || it[TYPE] == PARAMETERIZED_TYPE}})
-        def typeContainer = new HashSet<String>([CLASS_TYPE, INTERFACE_TYPE, ANNOTATION_TYPE, PACKAGE_TYPE, PROJECT_TYPE])
-        Gremlin.defineStep('filterTypeContainer', [Vertex, Pipe], {_().filter {typeContainer.contains(it[TYPE])}})
+        def ciap = new HashSet<String>([CLASS_TYPE, INTERFACE_TYPE, ANNOTATION_TYPE, PARAMETERIZED_TYPE])
+        Gremlin.defineStep('filterCIAP', [Vertex, Pipe], {_().filterTypes(ciap)})
+        def typeContainer = new HashSet<String>([CLASS_TYPE, INTERFACE_TYPE, ANNOTATION_TYPE, PARAMETERIZED_TYPE, PACKAGE_TYPE, PROJECT_TYPE])
+        Gremlin.defineStep('filterTypeContainer', [Vertex, Pipe], {_().filterTypes(typeContainer)})
         Gremlin.defineStep('filterName', [Vertex, Pipe], {final String desiredName -> _().filter {it[NAME] == desiredName}})
         Gremlin.defineStep('filterNotStub', [Vertex, Pipe], {_().filter {!it.stubNode}})
         Gremlin.defineStep('outContains', [Vertex, Pipe], {_().out(CONTAINS_EDGE)})
         Gremlin.defineStep('inContains', [Vertex, Pipe], {_().in(CONTAINS_EDGE)})
         Gremlin.defineStep('inExtends', [Vertex, Pipe], {_().in(EXTENDS_EDGE)})
-        Gremlin.defineStep('inc', [Vertex, Pipe], {final String property, final float value -> _().sideEffect {it[property] += value}})
-        Gremlin.defineStep('set', [Vertex, Pipe], {final String property, final float value -> _().sideEffect {it[property] = value}})
-        Gremlin.defineStep('inc', [Vertex, Pipe], {final String property, final int value -> _().sideEffect {it[property] += value}})
-        Gremlin.defineStep('set', [Vertex, Pipe], {final String property, final int value -> _().sideEffect {it[property] = value}})
+        Gremlin.defineStep('setFloat', [Vertex, Pipe], {final String property, final float value -> _().sideEffect {it[property] = value}})
+        Gremlin.defineStep('setInt', [Vertex, Pipe], {final String property, final int value -> _().sideEffect {it[property] = value}})
+        Gremlin.defineStep('setBoolean', [Vertex, Pipe], {final String property, final boolean value -> _().sideEffect {it[property] = (it[property] != null ? it[property] : 0.0) + value}})
+        Gremlin.defineStep('incFloat', [Vertex, Pipe], {final String property, final float value -> _().sideEffect {it[property] = (it[property] != null ? it[property] : 0.0) + value}})
+        Gremlin.defineStep('incInt', [Vertex, Pipe], {final String property, final int value -> _().sideEffect {it[property] = (it[property] != null ? it[property] : 0) + value}})
+    }
+
+    private void sumUp(Graph g, Pipe leaves, String propertyToBeSummed, Set<String> types) {
+        g.V.filterTypes(types).setInt(VISITED, 0).iterate()
+        g.V.filterTypes(types).setInt(NUMBER_OF_OUT, 0).iterate()
+        g.V.filterTypes(types).outContains.filterTypes(types).inContains.filterTypes(types).incInt(NUMBER_OF_OUT, 1).iterate()
+        def sonValue = 0
+        leaves.as('climb_up').sideEffect {sonValue = it[propertyToBeSummed]}.inContains.filterTypes(types)
+                .incInt(VISITED, 1).incInt(propertyToBeSummed, sonValue).filter {it[VISITED] == it[NUMBER_OF_OUT]}
+                .loop('climb_up') {true}.iterate()
     }
 
     /**
@@ -59,10 +73,14 @@ class CodeMetrics {
         loadGremlin()
         Graph g = openNeo4j(path)
         try {
-            g.V.filterC.set(MY_NUMBER_OF_CONSTRUCTORS, 0).iterate()
+            g.V.filterTypeContainer.setInt(MY_NUMBER_OF_CONSTRUCTORS, 0).iterate()
             def x = ''
-            g.V.filterC.sideEffect {x = it.name}.outContains.filterMethod.filter {it.name == x}
-                    .as('marking').inContains.filterC.inc(MY_NUMBER_OF_CONSTRUCTORS, 1).loop('marking') {true}.iterate()
+//            g.V.filterC.sideEffect {x = it.name}.outContains.filterM.filter {it.name == x}
+//                    .as('marking').inContains.filterC.inc(MY_NUMBER_OF_CONSTRUCTORS, 1).loop('marking') {true}.iterate()
+            def constructors = g.V.filterC.sideEffect {x = it[NAME]}.outContains.filterM.filter {it[NAME] == x}
+            constructors.inContains.filterC.incInt(MY_NUMBER_OF_CONSTRUCTORS, 1).iterate()
+            def leaves = g.V.filterTypeContainer.filter {it._().outContains.filterTypeContainer.iterate() == null}
+            sumUp(g, leaves, MY_NUMBER_OF_CONSTRUCTORS, new HashSet<String>([CLASS_TYPE, INTERFACE_TYPE, ANNOTATION_TYPE, PACKAGE_TYPE, PARAMETERIZED_TYPE, PROJECT_TYPE]))
         } finally {
             g.shutdown()
         }
@@ -73,9 +91,9 @@ class CodeMetrics {
      * @param g A graph
      */
     private void numberOfSubtypes(Graph g) {
-        g.V.filterTypeContainer.set(MY_NUMBER_OF_SUBTYPES, 0).iterate()
+        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_SUBTYPES, 0).iterate()
         /* Store also the value in project vertex, package vertices. */
-        g.V.filterTypeContainer.as('to_containing').inContains.filterTypeContainer.inc(MY_NUMBER_OF_SUBTYPES, 1).loop('to_containing') {true}.iterate()
+        g.V.filterTypeContainer.as('to_containing').inContains.filterTypeContainer.incInt(MY_NUMBER_OF_SUBTYPES, 1).loop('to_containing') {true}.iterate()
     }
 
     /**
@@ -83,9 +101,9 @@ class CodeMetrics {
      * @param g A graph
      */
     private void numberOfDirectSubtypes(Graph g) {
-        g.V.filterTypeContainer.set(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
+        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
         /* Store also the value in project vertex, package vertices. */
-        g.V.filterTypeContainer.inContains.inc(MY_NUMBER_OF_DIRECT_SUBTYPES, 1).iterate()
+        g.V.filterTypeContainer.inContains.incInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 1).iterate()
     }
 
     /**
@@ -96,8 +114,8 @@ class CodeMetrics {
     public double averageNumberOfSubtypes(String path) {
         Graph g = openNeo4j(path)
         try {
-            numberOfSubtypes(g)
             numberOfDirectSubtypes(g)
+            numberOfSubtypes(g)
             g.V.filterTypeContainer.sideEffect {it[MY_AVERAGE_NUMBER_OF_SUBTYPES] = ((double) it[MY_NUMBER_OF_SUBTYPES]) / it[MY_NUMBER_OF_DIRECT_SUBTYPES]}.iterate()
             return g.v(PROJECT_VERTEX_ID)[MY_AVERAGE_NUMBER_OF_SUBTYPES]
         } finally {
