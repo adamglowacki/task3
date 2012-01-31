@@ -20,4 +20,10 @@ class SimpleTest {
         final double EXPECTED_METRIC_ON_PROJECT = 1.1156
         assertEquals(EXPECTED_METRIC_ON_PROJECT, codeMetrics.averageNumberOfSubtypes(JUNIT_PATH), 0.001)
     }
+    
+    @Test
+    public void testEfferentCouplings() {
+        final int EXPECTED_METRIC_ON_PROJECT = 343;
+        assertEquals(EXPECTED_METRIC_ON_PROJECT, codeMetrics.efferentCouplingsForSpecified(JUNIT_PATH, CodeMetrics.PROJECT_VERTEX_ID))
+    }
 }
