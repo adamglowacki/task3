@@ -45,6 +45,7 @@ class CodeMetrics {
         Gremlin.defineStep('filterType', [Vertex, Pipe], {final String typeName -> _().filter {it[TYPE] == typeName}})
         Gremlin.defineStep('filterTypes', [Vertex, Pipe], {final Set<String> allowed -> _().filter {allowed.contains(it[TYPE])}})
         Gremlin.defineStep('filterNotTypes', [Vertex, Pipe], {final Set<String> allowed -> _().filter {!allowed.contains(it[TYPE])}})
+        Gremlin.defineStep('filterV', [Vertex, Pipe], {_().filterType(VARIABLE_TYPE)})
         Gremlin.defineStep('filterC', [Vertex, Pipe], {_().filterType(CLASS_TYPE)})
         Gremlin.defineStep('filterM', [Vertex, Pipe], {_().filterType(METHOD_TYPE)})
         Gremlin.defineStep('filterI', [Vertex, Pipe], {_().filterType(INTERFACE_TYPE)})
@@ -59,7 +60,11 @@ class CodeMetrics {
         Gremlin.defineStep('filterNotStub', [Vertex, Pipe], {_().filter {!it.stubNode}})
         Gremlin.defineStep('outContains', [Vertex, Pipe], {_().out(CONTAINS_EDGE)})
         Gremlin.defineStep('inContains', [Vertex, Pipe], {_().in(CONTAINS_EDGE)})
+        Gremlin.defineStep('outExtends', [Vertex, Pipe], {_().out(EXTENDS_EDGE)})
         Gremlin.defineStep('inExtends', [Vertex, Pipe], {_().in(EXTENDS_EDGE)})
+        Gremlin.defineStep('outImplements', [Vertex, Pipe], {_().out(IMPLEMENTS_EDGE)})
+        Gremlin.defineStep('outCalls', [Vertex, Pipe], {_().out(CALLS_EDGE)})
+        Gremlin.defineStep('outReturns', [Vertex, Pipe], {_().out(RETURNS_EDGE)})
         Gremlin.defineStep('setFloat', [Vertex, Pipe], {final String property, final float value -> _().sideEffect {it[property] = value}})
         Gremlin.defineStep('setInt', [Vertex, Pipe], {final String property, final int value -> _().sideEffect {it[property] = value}})
         Gremlin.defineStep('setBoolean', [Vertex, Pipe], {final String property, final boolean value -> _().sideEffect {it[property] = value}})
@@ -128,16 +133,16 @@ class CodeMetrics {
         g.V.setBoolean(VISITED, false).setBoolean(FLAG, false).iterate()
         /* mark all subtree */
         v._().as('filtering').setBoolean(VISITED, true).outContains.loop('filtering') {true}.iterate()
-        /* flag those that have some methods calling unvisited, returning unvisited or variables of unvisited type, or classes extending/implementing
-         * unvisited type */
         def x = null
-        v._().as('filtering').filterTypeContainer.sideEffect {x = it}.copySplit(
-                _().as('coming_out').out.sideEffect {
-                    if (!it[VISITED])
-                        x.setProperty(FLAG, true)
-                }.filterWithoutJavaTypes.filter {it[VISITED]}.loop('coming_out') {true},
-                _().outContains.loop('filtering') {true}
-        ).fairMerge.iterate()
+        def visitedTypes = g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP
+        /* have methods that call unvisited methods */
+        visitedTypes.sideEffect {x = it}.outContains.filterM.outCalls.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
+        /* have methods that return unvisited types */
+        visitedTypes.sideEffect {x = it}.outContains.filterM.outReturns.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
+        /* extends unvisited types */
+        visitedTypes.sideEffect {x = it}.outExtends.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
+        /* implements unvisited types */
+        visitedTypes.sideEffect {x = it}.outImplements.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
         int value = 0
         g.V.filter {it[FLAG]}.sideEffect {value++}.iterate()
         return value
