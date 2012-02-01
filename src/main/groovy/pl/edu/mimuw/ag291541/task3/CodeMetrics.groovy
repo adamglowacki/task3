@@ -9,9 +9,10 @@ import com.tinkerpop.pipes.Pipe
 class CodeMetrics {
     public static final String MY_NUMBER_OF_CONSTRUCTORS = 'ag291541NumberOfConstructors'
     public static final String MY_DEPTH_OF_INHERITANCE = 'ag291541DepthOfInheritance'
-    public static final String MY_NUMBER_OF_SUBTYPES = 'ag291541NumberOfSubtypes'
+    public static final String MY_NUMBER_OF_CONTAINED_TYPES = 'ag291541NumberOfContainedTypes'
     public static final String MY_NUMBER_OF_DIRECT_SUBTYPES = 'ag291541NumberOfDirectSubtypes'
     public static final String MY_AVERAGE_NUMBER_OF_SUBTYPES = 'ag291541AverageNumberOfSubtypes'
+    public static final String MY_NUMBER_OF_CONTAINED_TYPES_SUBTYPES = 'ag291541NumberOfContainedTypesSubtypes'
     public static final String MY_EFFERENT_COUPLINGS = 'ag291541MyEfferentCouplings'
     public static final String VISITED = 'ag291541Visited'
     public static final String NUMBER_OF_OUT = 'ag291541NumberOfOut'
@@ -97,9 +98,12 @@ class CodeMetrics {
      * @param g
      */
     private void depthOfInheritance(Graph g) {
+        /* one for all so that those that extend stub nodes also have some value for this property;
+         * interfaces (and annotations) have depth 1 by the definition */
+        g.V.filterCIAP.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
         /* interfaces (and annotations) have depth 1 by the definition */
-        g.V.filterI.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
-        g.V.filterA.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
+//        g.V.filterI.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
+//        g.V.filterA.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
         def lastDepth = 0
         /* step down from the Object class */
         g.V.filter {it[KEY] == OBJECT_KEY}.sideEffect {it[MY_DEPTH_OF_INHERITANCE] = 1}
@@ -120,9 +124,10 @@ class CodeMetrics {
             depthOfInheritance(g)
             def sumOfDepths = 0
             def countOfTypes = 0
-            g.v(PROJECT_VERTEX_ID)
-                    .as('come_to_son').outContains.filterCIAP.sideEffect {sumOfDepths += it[MY_DEPTH_OF_INHERITANCE]; countOfTypes++}
-                    .loop('come_to_son') {true}.iterate()
+            g.v(PROJECT_VERTEX_ID).as('come_to_son').outContains.filterCIAP.sideEffect {
+                sumOfDepths += it[MY_DEPTH_OF_INHERITANCE]
+                countOfTypes++
+            }.loop('come_to_son') {true}.iterate()
             return ((double) sumOfDepths) / countOfTypes
         } finally {
             g.shutdown()
@@ -130,23 +135,38 @@ class CodeMetrics {
     }
 
     /**
-     * Stores number of subtypes for each class and interface as a {@code MY_NUMBER_OF_SUBTYPES}.
-     * @param g The graph
-     */
-    private void numberOfSubtypes(Graph g) {
-        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_SUBTYPES, 0).iterate()
-        /* Store also the value in project vertex, package vertices. */
-        g.V.filterTypeContainer.as('to_containing').inContains.filterTypeContainer.incInt(MY_NUMBER_OF_SUBTYPES, 1).loop('to_containing') {true}.iterate()
-    }
-
-    /**
-     * Stores number of subtypes defined directly in each class and interface as their property named {@code MY_NUMBER_OF_DIRECT_SUBTYPES}.
+     * Stores number of subtypes defined directly in each class, interface, annotation and parameterized class as their
+     * property named {@code MY_NUMBER_OF_DIRECT_SUBTYPES}.
      * @param g The graph
      */
     private void numberOfDirectSubtypes(Graph g) {
-        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
-        /* Store also the value in project vertex, package vertices. */
-        g.V.filterTypeContainer.inContains.incInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 1).iterate()
+        g.V.filterCIAP.setInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
+        /* for every class, interface, annotation and interface go to the superclass and increment its counter */
+        g.V.filterCIAP.outExtends.incInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 1).iterate()
+    }
+
+    /**
+     * Stores number of types contained by each type container as their property named
+     * {@code MY_NUMBER_OF_CONTAINED_TYPES}.
+     * @param g The graph
+     */
+    private void numberOfContainedTypes(Graph g) {
+        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_CONTAINED_TYPES, 0).iterate()
+        /* for every class, interface, annotation and interface go to the containing element and increment its counter */
+        g.V.filterCIAP.inContains.incInt(MY_NUMBER_OF_CONTAINED_TYPES, 1).iterate()
+    }
+
+    /**
+     * Stores sum of numbers of subtypes from each contained type as a property named {@MY_NUMBER_OF_CONTAINED_TYPES_SUBTYPES}.
+     * @param g
+     */
+    private void numberOfContainedTypesSubtypes(Graph g) {
+        g.V.filterTypeContainer.setInt(MY_NUMBER_OF_CONTAINED_TYPES_SUBTYPES, 0).iterate()
+        /* tell the container how many subtypes you have */
+        def numberOfDirectSubtypes = 0
+        g.V.filterCIAP.sideEffect {numberOfDirectSubtypes = it[MY_NUMBER_OF_DIRECT_SUBTYPES]}.inContains
+                .filterTypeContainer.sideEffect {it[MY_NUMBER_OF_CONTAINED_TYPES_SUBTYPES] += numberOfDirectSubtypes}
+                .iterate()
     }
 
     /**
@@ -159,8 +179,12 @@ class CodeMetrics {
         Graph g = openNeo4j(path)
         try {
             numberOfDirectSubtypes(g)
-            numberOfSubtypes(g)
-            g.V.filterTypeContainer.sideEffect {it[MY_AVERAGE_NUMBER_OF_SUBTYPES] = ((double) it[MY_NUMBER_OF_SUBTYPES]) / it[MY_NUMBER_OF_DIRECT_SUBTYPES]}.iterate()
+            numberOfContainedTypes(g)
+            numberOfContainedTypesSubtypes(g)
+            /* count the ratio in every container */
+            g.V.filterTypeContainer.sideEffect {
+                it[MY_AVERAGE_NUMBER_OF_SUBTYPES] = ((double) it[MY_NUMBER_OF_CONTAINED_TYPES_SUBTYPES]) / ((double) it[MY_NUMBER_OF_CONTAINED_TYPES])
+            }.iterate()
             return g.v(PROJECT_VERTEX_ID)[MY_AVERAGE_NUMBER_OF_SUBTYPES]
         } finally {
             g.shutdown()
