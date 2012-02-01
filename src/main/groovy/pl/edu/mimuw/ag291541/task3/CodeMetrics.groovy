@@ -8,6 +8,7 @@ import com.tinkerpop.pipes.Pipe
 
 class CodeMetrics {
     public static final String MY_NUMBER_OF_CONSTRUCTORS = 'ag291541NumberOfConstructors'
+    public static final String MY_DEPTH_OF_INHERITANCE = 'ag291541DepthOfInheritance'
     public static final String MY_NUMBER_OF_SUBTYPES = 'ag291541NumberOfSubtypes'
     public static final String MY_NUMBER_OF_DIRECT_SUBTYPES = 'ag291541NumberOfDirectSubtypes'
     public static final String MY_AVERAGE_NUMBER_OF_SUBTYPES = 'ag291541AverageNumberOfSubtypes'
@@ -42,6 +43,7 @@ class CodeMetrics {
 
     private void loadGremlin() {
         Gremlin.load()
+
         Gremlin.defineStep('filterType', [Vertex, Pipe], {final String typeName -> _().filter {it[TYPE] == typeName}})
         Gremlin.defineStep('filterTypes', [Vertex, Pipe], {final Set<String> allowed -> _().filter {allowed.contains(it[TYPE])}})
         Gremlin.defineStep('filterNotTypes', [Vertex, Pipe], {final Set<String> allowed -> _().filter {!allowed.contains(it[TYPE])}})
@@ -81,9 +83,9 @@ class CodeMetrics {
         Graph g = openNeo4j(path)
         try {
             g.V.filterTypeContainer.setInt(MY_NUMBER_OF_CONSTRUCTORS, 0).iterate()
-            def x = ''
+            def className = ''
             def types = new HashSet<String>([CLASS_TYPE, ANNOTATION_TYPE, PACKAGE_TYPE, PROJECT_TYPE])
-            g.V.filterTypes(types).sideEffect {x = it.name}.outContains.filterM.filter {it.name == x}
+            g.V.filterTypes(types).sideEffect {className = it.name}.outContains.filterM.filter {it.name == className}
                     .as('marking').inContains.filterTypes(types).incInt(MY_NUMBER_OF_CONSTRUCTORS, 1).loop('marking') {true}.iterate()
         } finally {
             g.shutdown()
@@ -91,8 +93,45 @@ class CodeMetrics {
     }
 
     /**
+     * Stores depth of inheritance for each class and interface as a {@code MY_DEPTH_OF_INHERITANCE} property.
+     * @param g
+     */
+    private void depthOfInheritance(Graph g) {
+        /* interfaces (and annotations) have depth 1 by the definition */
+        g.V.filterI.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
+        g.V.filterA.setInt(MY_DEPTH_OF_INHERITANCE, 1).iterate()
+        def lastDepth = 0
+        /* step down from the Object class */
+        g.V.filter {it[KEY] == OBJECT_KEY}.sideEffect {it[MY_DEPTH_OF_INHERITANCE] = 1}
+                .as('store_depth').sideEffect {lastDepth = it[MY_DEPTH_OF_INHERITANCE]}.inExtends.sideEffect {it[MY_DEPTH_OF_INHERITANCE] = lastDepth + 1}
+                .loop('store_depth') {true}.iterate()
+    }
+
+    /**
+     * Returns an average depth of inheritance hierarchy among all classes and interfaces. {@code java.lang.Object} has
+     * depth 1 and every interface has depth 1.
+     * @param path File path of the Neo4j graph
+     * @return An average depth of inheritance.
+     */
+    public double averageDepthOfInheritance(String path) {
+        loadGremlin()
+        Graph g = openNeo4j(path)
+        try {
+            depthOfInheritance(g)
+            def sumOfDepths = 0
+            def countOfTypes = 0
+            g.v(PROJECT_VERTEX_ID)
+                    .as('come_to_son').outContains.filterCIAP.sideEffect {sumOfDepths += it[MY_DEPTH_OF_INHERITANCE]; countOfTypes++}
+                    .loop('come_to_son') {true}.iterate()
+            return ((double) sumOfDepths) / countOfTypes
+        } finally {
+            g.shutdown()
+        }
+    }
+
+    /**
      * Stores number of subtypes for each class and interface as a {@code MY_NUMBER_OF_SUBTYPES}.
-     * @param g A graph
+     * @param g The graph
      */
     private void numberOfSubtypes(Graph g) {
         g.V.filterTypeContainer.setInt(MY_NUMBER_OF_SUBTYPES, 0).iterate()
@@ -102,7 +141,7 @@ class CodeMetrics {
 
     /**
      * Stores number of subtypes defined directly in each class and interface as their property named {@code MY_NUMBER_OF_DIRECT_SUBTYPES}.
-     * @param g A graph
+     * @param g The graph
      */
     private void numberOfDirectSubtypes(Graph g) {
         g.V.filterTypeContainer.setInt(MY_NUMBER_OF_DIRECT_SUBTYPES, 0).iterate()
@@ -128,21 +167,27 @@ class CodeMetrics {
         }
     }
 
+    /**
+     * Return a value of Efferent Couplings metric on vertex {@code v} from graph {@code g}.
+     * @param g The graph
+     * @param v The vertex (anything that contains some types)
+     * @return A value of Efferent Couplings metric
+     */
     private int efferentCouplings(Graph g, Vertex v) {
-        /* all not touched yet */
+        /* mark all not touched yet */
         g.V.setBoolean(VISITED, false).setBoolean(FLAG, false).iterate()
-        /* mark all subtree */
+        /* visit a whole subtree */
         v._().as('filtering').setBoolean(VISITED, true).outContains.loop('filtering') {true}.iterate()
         def x = null
-        def visitedTypes = g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP
         /* have methods that call unvisited methods */
-        visitedTypes.sideEffect {x = it}.outContains.filterM.outCalls.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
+        g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP.sideEffect {x = it}.outContains.filterM.outCalls.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
         /* have methods that return unvisited types */
-        visitedTypes.sideEffect {x = it}.outContains.filterM.outReturns.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
+        g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP.sideEffect {x = it}.outContains.filterM.outReturns.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate()
         /* extends unvisited types */
-        visitedTypes.sideEffect {x = it}.outExtends.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
+        g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP.sideEffect {x = it}.outExtends.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
         /* implements unvisited types */
-        visitedTypes.sideEffect {x = it}.outImplements.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
+        g.V.filter {it[VISITED]}.filter {!it[FLAG]}.filterCIAP.sideEffect {x = it}.outImplements.filter {!it[VISITED]}.sideEffect {x[FLAG] = true}.iterate();
+        /* sum it all */
         int value = 0
         g.V.filter {it[FLAG]}.sideEffect {value++}.iterate()
         return value
@@ -166,11 +211,11 @@ class CodeMetrics {
 
     /**
      * Returns number of vertices of given type that have different values of given numeric properties. It ignores stub nodes.
-     * @param path A Neo4j graph.
+     * @param path A Neo4j graph
      * @param type Name of type to filter
      * @param property1 First property name
      * @param property2 Second property name
-     * @return Number of vertices that have non-equal properties.
+     * @return Number of vertices that have non-equal properties (but who do have them defined)
      */
     public long differentOn(String path, String type, String property1, String property2) {
         Graph g = openNeo4j(path)
